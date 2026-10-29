@@ -1,0 +1,88 @@
+import unittest
+
+import numpy as np
+
+from tspga.hop import Migrant
+from tspga.instance import is_valid_tour, random_instance
+from tspga.island import Island
+from tspga.operators import InversionMutation, OrderCrossover, TournamentSelection
+
+
+def make_island(seed=0, pop=30, n=20, elite=2):
+    return Island(0, random_instance(n, seed=9), TournamentSelection(3), OrderCrossover(0.9),
+                  InversionMutation(0.3), pop, elite, np.random.default_rng(seed))
+
+
+class IslandTest(unittest.TestCase):
+    def test_initial_population_is_valid(self):
+        island = make_island()
+        self.assertEqual(island.population.shape, (30, 20))
+        self.assertTrue(all(is_valid_tour(t, 20) for t in island.population))
+        self.assertEqual(len(island.best_history), 1)
+
+    def test_evolve_records_history_per_generation(self):
+        island = make_island()
+        island.evolve(15)
+        self.assertEqual(len(island.best_history), 16)
+        self.assertEqual(len(island.mean_history), 16)
+        self.assertTrue(all(is_valid_tour(t, 20) for t in island.population))
+
+    def test_elitism_makes_best_cost_non_increasing(self):
+        island = make_island(elite=1)
+        island.evolve(40)
+        self.assertTrue((np.diff(island.best_history) <= 1e-9).all())
+
+    def test_evolution_improves_the_tour(self):
+        island = make_island()
+        start = island.best_cost
+        island.evolve(60)
+        self.assertLess(island.best_cost, start)
+
+    def test_mean_is_not_below_best(self):
+        island = make_island()
+        island.evolve(10)
+        self.assertTrue((np.array(island.mean_history) >= np.array(island.best_history) - 1e-9).all())
+
+    def test_emigrants_are_copies_of_the_best_tours(self):
+        island = make_island()
+        island.evolve(5)
+        out = island.emigrants(3)
+        self.assertEqual(len(out), 3)
+        self.assertEqual([m.cost for m in out], sorted(m.cost for m in out))
+        self.assertAlmostEqual(out[0].cost, island.best_cost)
+        out[0].tour[:] = 0                                   # изменение копии не должно портить остров
+        self.assertTrue(all(is_valid_tour(t, 20) for t in island.population))
+
+    def test_accept_replaces_worst_and_keeps_population_size(self):
+        island = make_island()
+        new_tour = np.argsort(island.instance.coords[:, 0])  # какой-то валидный маршрут
+        cost = island.instance.tour_length(new_tour)
+        worst_before = island.costs.max()
+        island.accept([Migrant(new_tour, cost)])
+        self.assertEqual(island.population.shape, (30, 20))
+        self.assertTrue(any((t == new_tour).all() for t in island.population))
+        self.assertLessEqual(island.costs.max(), worst_before)
+
+    def test_accept_ignores_duplicates_of_existing_tours(self):
+        island = make_island()
+        existing = island.population[5].copy()
+        before = island.population.copy()
+        island.accept([Migrant(existing, island.instance.tour_length(existing))])
+        np.testing.assert_array_equal(island.population, before)
+
+    def test_same_seed_same_evolution(self):
+        a, b = make_island(seed=4), make_island(seed=4)
+        a.evolve(20), b.evolve(20)
+        self.assertEqual(a.best_history, b.best_history)
+
+    def test_elite_count_must_be_smaller_than_population(self):
+        with self.assertRaises(ValueError):
+            make_island(pop=10, elite=10)
+
+    def test_population_size_must_be_even(self):
+        with self.assertRaises(ValueError):
+            make_island(pop=11)
+
+
+if __name__ == "__main__":
+    unittest.main()

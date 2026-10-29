@@ -1,0 +1,57 @@
+import threading
+import unittest
+
+import numpy as np
+
+from tspga.hop import HopIsland, Migrant
+
+
+def migrant(i):
+    return Migrant(tour=np.array([i]), cost=float(i))
+
+
+class HopIslandTest(unittest.TestCase):
+    def test_collect_returns_deposited_in_fifo_order_and_drains(self):
+        hop = HopIsland(0, 1, capacity=10)
+        hop.deposit([migrant(1), migrant(2), migrant(3)])
+        self.assertEqual([m.cost for m in hop.collect()], [1.0, 2.0, 3.0])
+        self.assertEqual(hop.collect(), [])
+
+    def test_capacity_evicts_oldest(self):
+        hop = HopIsland(0, 1, capacity=3)
+        hop.deposit([migrant(i) for i in range(6)])
+        self.assertEqual([m.cost for m in hop.collect()], [3.0, 4.0, 5.0])
+
+    def test_no_migrants_are_lost_under_concurrent_access(self):
+        hop = HopIsland(0, 1, capacity=100_000)
+        producers, per_producer = 8, 500
+        collected = []
+        done = threading.Event()
+
+        def produce(base):
+            for i in range(per_producer):
+                hop.deposit([migrant(base * per_producer + i)])
+
+        def consume():
+            while not done.is_set():
+                collected.extend(hop.collect())
+
+        consumer = threading.Thread(target=consume)
+        threads = [threading.Thread(target=produce, args=(p,)) for p in range(producers)]
+        consumer.start()
+        [t.start() for t in threads]
+        [t.join() for t in threads]
+        done.set()
+        consumer.join()
+        collected.extend(hop.collect())
+        self.assertEqual(sorted(m.cost for m in collected), [float(i) for i in range(producers * per_producer)])
+        self.assertEqual(hop.deposited, producers * per_producer)
+        self.assertEqual(hop.collected, producers * per_producer)
+
+    def test_capacity_must_be_positive(self):
+        with self.assertRaises(ValueError):
+            HopIsland(0, 1, capacity=0)
+
+
+if __name__ == "__main__":
+    unittest.main()

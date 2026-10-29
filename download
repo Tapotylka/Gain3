@@ -1,0 +1,107 @@
+"""Операторы ГА для перестановок: селекция, кроссинговер, мутация (стратегии с общим интерфейсом)."""
+from abc import ABC, abstractmethod
+
+import numpy as np
+
+
+def _check_rate(rate: float, name: str) -> float:
+    if not 0.0 <= rate <= 1.0:
+        raise ValueError(f"{name} должна быть в диапазоне [0; 1]")
+    return rate
+
+
+# ---------------------------------------------------------------- селекция
+class Selection(ABC):
+    @abstractmethod
+    def select(self, fitness: np.ndarray, count: int, rng: np.random.Generator) -> np.ndarray:
+        """Индексы count родителей; чем больше fitness, тем лучше особь."""
+
+
+class TournamentSelection(Selection):
+    """Турнир размера k: побеждает самая приспособленная из k случайных особей."""
+
+    def __init__(self, size: int = 3):
+        if size < 1:
+            raise ValueError("размер турнира должен быть не меньше 1")
+        self.size = size
+
+    def select(self, fitness, count, rng):
+        contenders = rng.integers(0, len(fitness), size=(count, self.size))
+        return contenders[np.arange(count), fitness[contenders].argmax(axis=1)]
+
+
+# ------------------------------------------------------------ кроссинговер
+class Crossover(ABC):
+    def __init__(self, rate: float = 0.9):
+        self.rate = _check_rate(rate, "вероятность кроссинговера")
+
+    @abstractmethod
+    def cross(self, parents: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Родители 2i и 2i+1 образуют пару, результат — потомки той же формы."""
+
+
+def order_crossover(p1: np.ndarray, p2: np.ndarray, a: int, b: int) -> np.ndarray:
+    """OX: сегмент [a, b) берётся у p1, остальные города — в порядке p2, начиная после точки b."""
+    n = len(p1)
+    child = np.empty_like(p1)
+    segment = p1[a:b]
+    child[a:b] = segment
+    used = np.zeros(n, dtype=bool)
+    used[segment] = True
+    order = np.concatenate((p2[b:], p2[:b]))
+    child[(np.arange(n - (b - a)) + b) % n] = order[~used[order]]
+    return child
+
+
+class OrderCrossover(Crossover):
+    """Упорядоченный кроссинговер (OX): всегда даёт корректную перестановку."""
+
+    def cross(self, parents, rng):
+        if len(parents) % 2:
+            raise ValueError("число родителей должно быть чётным")
+        n = parents.shape[1]
+        children = parents.copy()
+        for k in range(0, len(parents), 2):
+            if rng.random() < self.rate:
+                a, b = np.sort(rng.integers(0, n, size=2))
+                b += 1
+                p1, p2 = parents[k], parents[k + 1]
+                children[k], children[k + 1] = order_crossover(p1, p2, a, b), order_crossover(p2, p1, a, b)
+        return children
+
+
+# ------------------------------------------------------------------ мутация
+class Mutation(ABC):
+    def __init__(self, rate: float):
+        self.rate = _check_rate(rate, "вероятность мутации")
+
+    def mutate(self, tours: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """Возвращает новый массив; каждая особь мутирует с вероятностью rate."""
+        out = tours.copy()
+        n = tours.shape[1]
+        for k in np.flatnonzero(rng.random(len(tours)) < self.rate):
+            i = int(rng.integers(0, n))
+            j = (i + int(rng.integers(1, n))) % n          # две разные позиции
+            self._apply(out[k], min(i, j), max(i, j))
+        return out
+
+    @staticmethod
+    @abstractmethod
+    def _apply(tour: np.ndarray, lo: int, hi: int) -> None:
+        """Изменяет маршрут на месте по позициям lo < hi."""
+
+
+class InversionMutation(Mutation):
+    """Разворот участка маршрута (аналог 2-opt хода): меняет два ребра."""
+
+    @staticmethod
+    def _apply(tour, lo, hi):
+        tour[lo:hi + 1] = tour[lo:hi + 1][::-1].copy()
+
+
+class SwapMutation(Mutation):
+    """Обмен двух городов местами."""
+
+    @staticmethod
+    def _apply(tour, lo, hi):
+        tour[lo], tour[hi] = tour[hi], tour[lo]
